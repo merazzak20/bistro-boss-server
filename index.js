@@ -43,7 +43,7 @@ async function run() {
 
     // middle Wire
     const verifyToken = (req, res, next) => {
-      console.log("inside verify", req.headers.authorization);
+      // console.log("inside verify", req.headers.authorization);
       if (!req.headers.authorization) {
         return res.status(401).send({ message: "unauthorized access" });
       }
@@ -129,6 +129,44 @@ async function run() {
       res.send(result);
     });
 
+    app.get("/menu/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: id };
+      const result = await menuCollection.findOne(query);
+      res.send(result);
+    });
+
+    app.patch("/menu/:id", async (req, res) => {
+      const item = req.body;
+      const id = req.params.id;
+      const query = { _id: id };
+      const updatedData = {
+        $set: {
+          name: item.name,
+          recipe: item.recipe,
+          category: item.category,
+          price: item.price,
+          image: item.image,
+        },
+      };
+      const result = await menuCollection.updateOne(query, updatedData);
+      res.send(result);
+    });
+
+    app.post("/menu", verifyToken, verifyAdmin, async (req, res) => {
+      const item = req.body;
+      const result = await menuCollection.insertOne(item);
+      res.send(result);
+    });
+
+    app.delete("/menu/:id", verifyToken, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+
+      const query = { _id: new ObjectId(id) };
+      const result = await menuCollection.deleteOne(query);
+      res.send(result);
+    });
+
     /**********************
      * Menu Related API
      ********************/
@@ -149,8 +187,8 @@ async function run() {
     });
 
     app.post("/carts", async (req, res) => {
-      const cartItem = req.body;
-      const result = await cartsCollection.insertOne(cartItem);
+      const item = req.body;
+      const result = await cartsCollection.insertOne(item);
       res.send(result);
     });
 
