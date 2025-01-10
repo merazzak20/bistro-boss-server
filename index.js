@@ -4,6 +4,7 @@ const jwt = require("jsonwebtoken");
 // const cookieParser = require("cookie-parser");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 require("dotenv").config();
+const stripe = require("stripe")(`${process.env.STRIPE_SECRET_KEY}`);
 
 const port = process.env.PORT || 9000;
 const app = express();
@@ -29,6 +30,7 @@ async function run() {
     const menuCollection = db.collection("menu");
     const reviewsCollection = db.collection("reviews");
     const cartsCollection = db.collection("carts");
+    const paymentCollection = db.collection("payments");
 
     /**********************
      * JWT related API
@@ -36,7 +38,7 @@ async function run() {
     app.post("/jwt", async (req, res) => {
       const user = req.body;
       const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
-        expiresIn: "1h",
+        expiresIn: "365d",
       });
       res.send({ token });
     });
@@ -120,6 +122,71 @@ async function run() {
       res.send(result);
     });
 
+    app.get("/admin-states", verifyToken, verifyAdmin, async (req, res) => {
+      const users = await userCollection.estimatedDocumentCount();
+      const menuItems = await menuCollection.estimatedDocumentCount();
+      const orders = await paymentCollection.estimatedDocumentCount();
+
+      // const payments = await paymentCollection.find().toArray();
+      // const revenue = payments.reduce(
+      //   (total, payment) => total + payment.price,
+      //   0
+      // );
+      // const TotalRevenue = revenue.toFixed(2);
+
+      const result = await paymentCollection
+        .aggregate([
+          {
+            $group: {
+              _id: null,
+              totalRevenue: {
+                $sum: "$price",
+              },
+            },
+          },
+        ])
+        .toArray();
+
+      const revenue = result.length > 0 ? result[0].totalRevenue : 0;
+
+      res.send({ users, menuItems, orders, revenue });
+    });
+
+    app.get("/order-states", verifyToken, verifyAdmin, async (req, res) => {
+      const result = await paymentCollection
+        .aggregate([
+          { $unwind: "$menuIds" },
+          {
+            $lookup: {
+              from: "menu",
+              localField: "menuIds",
+              foreignField: "_id",
+              as: "menuItems",
+            },
+          },
+          {
+            $unwind: "$menuItems",
+          },
+          {
+            $group: {
+              _id: "$menuItems.category",
+              quantity: { $sum: 1 },
+              revenue: { $sum: "$menuItems.price" },
+            },
+          },
+          {
+            $project: {
+              _id: 0,
+              category: "$_id",
+              quantity: "$quantity",
+              revenue: "$revenue",
+            },
+          },
+        ])
+        .toArray();
+      res.send(result);
+    });
+
     /**********************
      * Menu Related API
      ********************/
@@ -199,11 +266,53 @@ async function run() {
       res.send(result);
     });
 
+    /**********************
+     * Payment Related API
+     ********************/
+    app.post("/create-payment-intent", async (req, res) => {
+      const { price } = req.body;
+      const amount = parseInt(price * 100);
+      console.log("amount", amount);
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: amount,
+        currency: "usd",
+        payment_method_types: ["card"],
+      });
+
+      res.send({ clientSecret: paymentIntent.client_secret });
+    });
+
+    app.get("/payments/:email", verifyToken, async (req, res) => {
+      const email = req.params.email;
+      if (email !== req.decoded.email) {
+        return res.status(403).send({ message: "forbiden access" });
+      }
+      const query = { email: email };
+      const result = await paymentCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    app.post("/payments", async (req, res) => {
+      const payment = req.body;
+      const result = await paymentCollection.insertOne(payment);
+
+      // Delete Each Cart Item After Payment
+      const query = {
+        _id: {
+          $in: payment.cartIds.map((id) => new ObjectId(id)),
+        },
+      };
+
+      const deleteResult = await cartsCollection.deleteMany(query);
+
+      res.send({ result, deleteResult });
+    });
+
     // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
-    );
+    // await client.db("admin").command({ ping: 1 });
+    // console.log(
+    //   "Pinged your deployment. You successfully connected to MongoDB!"
+    // );
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
